@@ -1,0 +1,648 @@
+---
+title: "CSS Final Project"
+author: "Mitchell Ewald"
+date: "2024-07-31"
+output: pdf_document
+---
+
+!!!
+
+READ ME:
+In order for this code to successfully run, you must put the files 
+"casual_comments.csv" and "political_comments.csv" into a folder 
+titled "reddit/subreddits23/" in the directory you're running this code from.
+
+In addition, several parts are currently commented out.
+For example, Part 4 has one small section that exports the comment samples
+taken from this study. Part 6 is completely commented-out since this section of 
+code takes 35+ hours to run. The code scores all 400,000+ 
+Reddit comments by sentiment, an integral part to this study. 
+If you wish to replicate all aspects of this study's results for yourself, 
+clear the commenting-out on these two sections of code. 
+
+!!!
+
+
+
+  ### PART 1: SETUP ### 
+```{r}
+#Set working directory to location of R code
+  setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+  
+#Install necessary packages and introduce needed libraries
+  # install.packages('CausalImpact')
+  # install.packages('dplyr')
+  # install.packages('ggplot2')
+  # install.packages('parallel')
+  # install.packages('patchwork')
+  # install.packages('tidyverse')
+  # install.packages('vader')
+  # install.packages('zoo')
+  
+  library(CausalImpact)
+  library(dplyr)
+  library(ggplot2)
+  library(parallel)
+  library(patchwork)
+  library(tidyverse)
+  library(vader)
+  library(zoo)
+
+```
+
+
+  ### PART 2: READ AND CLEAN DATA ###
+Note that this data is pre-processed. 
+
+The original dataset is all comments over all years by subreddit, retrieved via an 
+Reddit administrator (u/Watchful1) who still has access to such thorough 
+datascrapes post-reddit API crackdown and provides these scrapes online.
+Link: https://old.reddit.com/r/pushshift/comments/1akrhg3/separate_dump_files_for_the_top_40k_subreddits/
+
+I then filtered all the zipped datasets pre-unzip down to the necessary date ranges via the above Reddit administrator's provided Python script. I will provide pre-zip datasets and Python filter scripts with the final paper. 
+
+Unzipping the zipped datasets (0.7 - 1.4 GB in size) to CSVs without pre-filtering produces massive datasets (approx. 7x in size) that require much higher processing power than the average computer. Therefore, filtering pre-unzip is more expedient.
+```{r}
+
+#Beginning the process with one subreddit
+  df_casual <- read.csv("reddit/subreddits23/casual_comments.csv", 
+                        header = FALSE) #Filtered comments from r/CasualConversation
+  glimpse(df_casual)
+  df_casual <- subset(df_casual, select = c(V2, V5)) #Keeping the relevant columns
+  headernames <- c("date", "comment") # Assigning the header names that we'll attribute to
+                                      # each respective dataframe
+  names(df_casual) <- headernames
+  glimpse(df_casual)
+
+
+#Repeating the process for the second subreddit
+  df_political <- read.csv("reddit/subreddits23/political_comments.csv", 
+                           header = FALSE)  #Filtered comments from r/PoliticalDiscussion
+  glimpse(df_political)
+  df_political <- subset(df_political, select = c(V2, V5))
+  names(df_political) <- headernames
+  glimpse(df_political)
+
+
+#Assign IDs to comments in each subreddit dataframe
+  df_casual <- df_casual %>% 
+                  arrange(date, comment)  # Want to make sure R will assign row 
+                                          # IDs in the same values every time.
+  df_casual$ID <- 1:nrow(df_casual) #Assigning row IDs
+  
+  df_political <- df_political %>% 
+                    arrange(date,comment)
+  df_political$ID <- 1:nrow(df_political)
+  
+```
+ 
+
+  ### PART 3: CREATING SHARED DATAFRAME FOR THE TWO SUBREDDITS ###
+```{r}
+
+#Creating subreddit IDs so we know each comment's forum in the combined df
+  df_casual$subreddit <- "r/CasualConversation"
+  df_political$subreddit <- "r/PoliticalDiscussion"
+  
+#Converting dates since each subreddit has different date formats  
+  dates_test_pol <- as.Date(df_political$date, "%m/%d/%y")
+  dates_test_cas <- as.Date(df_casual$date)
+  
+  df_political$date <- as.Date(df_political$date, "%m/%d/%y")
+  df_casual$date <- as.Date(df_casual$date)
+  
+  table(df_casual$date)
+  table(df_political$date)
+      #All looks good!
+
+#Officially appending datasets
+  df_all <- rbind(df_casual, df_political)
+  table(df_all$date, useNA = "always") #Check for dates
+      #All looks good!
+ 
+#Checking for common comments to see if there are any issues in the data.
+  comment_table <- table(df_all$comment)
+  comment_table <- sort(comment_table, decreasing = TRUE)
+  head(comment_table, 20)
+    #We see here we should readily remove three types of comments:
+      #' 1. "[removed]" comments
+      #' 2. "[deleted]" comments
+      #' 3. Subreddit moderator bot comments, which almost always include:
+      #'      "I am a bot"
+
+#Cleaning data sets on these three points
+  df_all <- df_all[df_all$comment != "[removed]",] #Removes all Point 1 comments
+  df_all <- df_all[df_all$comment != "[deleted]",] #Removes all Point 2 comments
+  df_all <- df_all[!grepl("I am a bot", df_all$comment),] #Removes all Point 3 comments 
+  
+  #Check new results
+  comment_table2 <- table(df_all$comment)
+  comment_table2 <- sort(comment_table2, decreasing = TRUE)
+  head(comment_table2, 20)
+    # We'll have to remove some more moderating bot comments!
+  
+  df_all <- df_all[!grepl("wiki/rules", df_all$comment),]
+  df_all <- df_all[!grepl("Do not submit low investment content.", df_all$comment),]
+  df_all <- df_all[!grepl("Do not personally insult other Redditors,", df_all$comment),]
+  df_all <- df_all[!grepl("/w/rules", df_all$comment),]
+  df_all <- df_all[!grepl("wiki/posts", df_all$comment),]
+  comment_table2 <- table(df_all$comment)
+  comment_table2 <- sort(comment_table2, decreasing = TRUE)
+  head(comment_table2, 20)
+  
+  df_all <- df_all[!grepl("No meta discussion", df_all$comment),]
+  df_all <- df_all[!grepl("This post has been removed", df_all$comment),]
+  df_all <- df_all[!grepl("do not submit low investment content", df_all$comment),]
+  comment_table2 <- table(df_all$comment)
+  comment_table2 <- sort(comment_table2, decreasing = TRUE)
+  head(comment_table2, 20)
+    #All these comments now look like human comments! This step of data cleaning is done.
+  
+  
+#Creating combined-group IDs    
+  df_all <- df_all %>% 
+               arrange(subreddit, ID)  # Want to make sure R will assign group-level 
+                                       # IDs to the same values each time
+  df_all$superID <- 1:nrow(df_all)  # Assigning combined-group IDs
+
+  
+```
+
+
+  ### PART 4: CREATING SAMPLE TO ALLOW HUMAN SCORING OF SENTIMENT ###
+I will use this step to compare human coding to the Vader sentiment analysis
+score.
+```{r}
+
+#Setting seed for reproducibility
+  set.seed(300)
+
+#Sample 1 will allow human scorer to read through a batch of comments without scoring.
+  sample1 <- sample_n(df_all, 150)
+  head(sample1$comment, 10)
+    #Taking a look at these comments, we can see some with a nonsensical "\n\n".
+    #When looking at the original CSV, it looks like these are just line breaks 
+    #to separate paragraphs. Let's replace these characters.
+  
+  df_all$comment <- gsub("\n\n", " ", df_all$comment)
+  df_all$comment <- gsub("\n", " ", df_all$comment)
+  sample1$comment <- gsub("\n\n", " ", sample1$comment)
+  sample1$comment <- gsub("\n", " ", sample1$comment)
+  head(sample1$comment, 10)
+    #Looks good now!
+  
+  
+#Sample 2 is the sample that human scorer will actually score.
+  sample2 <- sample_n(df_all, 150)
+  
+  # Remove hashtags if you want to export samples
+    # write_tsv(sample1, file = "sample1.tsv")
+    # write_tsv(sample2, file = "sample2.tsv")
+
+```
+
+
+    ### PART 5: CLEANING COMMENT DATASETS ###
+```{r}
+
+#Applying the same cleaning steps from df_all to df_political
+    df_political <- df_political[df_political$comment != "[removed]",]
+    df_political <- df_political[df_political$comment != "[deleted]",]
+    df_political <- df_political[!grepl("I am a bot", df_political$comment),]
+    df_political <- df_political[!grepl("wiki/rules", df_political$comment),]
+    df_political <- df_political[!grepl("Do not submit low investment content.",     df_political$comment),]
+    df_political <- df_political[!grepl("Do not personally insult other Redditors,", df_political$comment),]
+    df_political <- df_political[!grepl("/w/rules", df_political$comment),]
+    df_political <- df_political[!grepl("wiki/posts", df_political$comment),]
+    df_political <- df_political[!grepl("No meta discussion", df_political$comment),]
+    df_political <- df_political[!grepl("This post has been removed", df_political$comment),]
+    df_political <- df_political[!grepl("do not submit low investment content", df_political$comment),]
+    df_political$comment <- gsub("\n\n", " ", df_political$comment)
+    df_political$comment <- gsub("\n", " ", df_political$comment)
+    
+    comment_table3 <- table(df_political$comment)
+    comment_table3 <- sort(comment_table3, decreasing = TRUE)
+    head(comment_table3, 10)
+      # All these comments now look like human comments! Some are probably a       
+      # single person posting their text multiple times. This step of 
+      # data cleaning is done.
+    
+
+#Cleaning df_casual with same steps
+    df_casual <- df_casual[df_casual$comment != "[removed]",]
+    df_casual <- df_casual[df_casual$comment != "[deleted]",]
+    df_casual <- df_casual[!grepl("I am a bot", df_casual$comment),]
+    df_casual <- df_casual[!grepl("wiki/rules", df_casual$comment),]
+    df_casual <- df_casual[!grepl("Do not submit low investment content.",df_casual$comment),]
+    df_casual <- df_casual[!grepl("Do not personally insult other Redditors,", df_casual$comment),]
+    df_casual <- df_casual[!grepl("/w/rules", df_casual$comment),]
+    df_casual <- df_casual[!grepl("wiki/posts", df_casual$comment),]
+    df_casual <- df_casual[!grepl("No meta discussion", df_casual$comment),]
+    df_casual <- df_casual[!grepl("This post has been removed", df_casual$comment),]
+    df_casual <- df_casual[!grepl("do not submit low investment content",df_casual$comment),]
+    df_casual$comment <- gsub("\n\n", " ", df_casual$comment)
+    df_casual$comment <- gsub("\n", " ", df_casual$comment)
+    comment_table4 <- table(df_casual$comment)
+    comment_table4 <- sort(comment_table4, decreasing = TRUE)
+    head(comment_table4, 10)
+      # All these comments now look like human comments! This step of data cleaning       
+      # is done.
+    
+#Removing any blank or NA comments
+    df_political <- df_political[!is.na(df_political$comment), ]
+    df_political <- df_political[df_political$comment != "", ]
+    df_casual <- df_casual[!is.na(df_casual$comment), ]
+    df_casual <- df_casual[df_casual$comment != "", ]
+        #No NA or blank comments
+
+```
+
+
+  ### PART 6: APPLYING VADER SENTIMENT ANALYSIS TO COMMENTS ###
+Remove comment-out application to run official commands. Note that chunks are 
+used here to reduce processing burden on the computer. Processing via chunks 
+took 12+ hours for df_political and 26+ hours for df_casual on a MacBook Pro 2013. 
+(38+ hours total)
+
+Code written here with the help of ChatGPT.
+```{r}
+  
+# #Applying VADER analysis to df_political and df_casual
+#   
+#   # 1. r/PoliticalDiscussion
+#     # Add a grouping variable
+#     chunk_size <- 10000 
+#     df_political <- df_political %>%
+#       mutate(group = ceiling(row_number() / chunk_size))
+#     
+#     # Split the data into chunks
+#     chunks <- df_political %>% group_split(group)
+#   
+#     # Function to apply VADER analysis to each chunk
+#     process_chunk <- function(chunk) {comments <- chunk$comment
+#                                       vader_results <- vader_df(comments)
+#                                       return(vader_results)}
+#   
+#     # Process each chunk and combine the results
+#     vader_results_list <- lapply(chunks, function(chunk) {
+#       tryCatch({
+#         process_chunk(chunk)
+#       }, error = function(e) {
+#         cat("Error in processing chunk:", conditionMessage(e), "\n")
+#         return(NULL)
+#       })
+#     })
+# 
+#         
+#   # 2. r/CasualConversation
+#      # Add a grouping variable
+#        df_casual <- df_casual %>%
+#         mutate(group = ceiling(row_number() / chunk_size))
+#   
+#      # Split the data into chunks
+#      chunks_cas <- df_casual %>% group_split(group)
+#   
+#       # Process each chunk and combine the results
+#       vader_results_list2 <- lapply(chunks_cas, function(chunk) {
+#         tryCatch({
+#           process_chunk(chunk)
+#         }, error = function(e) {
+#           cat("Error in processing chunk:", conditionMessage(e), "\n")
+#           return(NULL)
+#         })
+#       })
+    
+```
+
+
+  ### PART 7: MERGE VADER RESULTS INTO ORIGINAL DATAFRAMES ###
+```{r}
+      
+#Starting with r/PoliticalDiscussion    
+  vader_results_pol <- do.call(rbind, vader_results_list) 
+    #Returns VADER results from list to df format
+  vader_results_pol <- rename(vader_results_pol, comment = text)
+    #Prepares new dfs for merging
+  vader_results_pol <- vader_results_pol[!duplicated(vader_results_pol),]
+    #Removes duplicates so to not have a one-to-many merge
+  df_political <- left_join(df_political, vader_results_pol, by = "comment")
+    #Merge the VADER results into the original dataframe
+  
+#Repeat process for r/CasualConversation
+  vader_results_cas <- do.call(rbind, vader_results_list2)
+  vader_results_cas <- rename(vader_results_cas, comment = text)
+  vader_results_cas <- vader_results_cas[!duplicated(vader_results_cas),]
+  df_casual <- left_join(df_casual, vader_results_cas, by = "comment")
+  
+#Repeat process for combined df
+  vader_results_all <- rbind(vader_results_pol, vader_results_cas)
+  vader_results_all <- vader_results_all[!duplicated(vader_results_all),]
+  df_all <- left_join(df_all, vader_results_all, by = "comment")
+
+```
+
+
+  ### PART 8: ANALYZING VADER ERROR VALUES ###
+```{r}
+
+#Observing the comments in r/PoliticalDiscussion that VADER had trouble analyzing
+  vader_errors_pol <- df_political %>% 
+                        filter(word_scores == "ERROR")
+  count(vader_errors_pol)
+  show(vader_errors_pol$comment)
+    #' Only 11 comments out of 143,866 unique comments were coded as errors.
+    #' Furthermore, there appears to be nothing special about these comments.
+    #' We'll drop them at the end of this kernel.
+  
+#Observing the comments in r/CasualConversation that VADER had trouble analyzing
+  vader_errors_cas <- df_casual %>% 
+                        filter(word_scores == "ERROR")
+  count(vader_errors_cas)
+  show(vader_errors_cas$comment)
+    #' Only 17 comments out of 275,433 unique comments were coded as errors.
+    #' Also, there appears to be nothing special about these comments.
+    #' We'll drop them as well.
+
+#Dropping the comments with VADER analysis errors
+  df_political <- df_political[df_political$word_scores != "ERROR",]
+  df_casual <- df_casual[df_casual$word_scores != "ERROR",]
+  df_all <- df_all[df_all$word_scores != "ERROR",]
+  
+#Checking that the drops worked
+  show(df_political %>% filter(word_scores == "ERROR"))
+  show(df_casual %>% filter(word_scores == "ERROR"))
+  show(df_all %>% filter(word_scores == "ERROR"))
+    #All's looking good!
+
+```
+
+
+  ### PART 9: COMPARING VADER VALUES VS. HAND-CODED VALUES ###
+```{r}
+
+#Reading in hand-coded sample
+  sample2_hand_coded <- read_tsv("sample2_humanscored.tsv")
+
+#Merging VADER results with hand-coded sample
+  df_all_restricted <- subset(df_all, select = c(superID, compound,
+                                                 pos, neu, neg))
+  sample2_hand_coded <- left_join(sample2_hand_coded, df_all_restricted, by = "superID")
+      
+#Let's officially compare the human-scored to the VADER scores!
+    table(sample2_hand_coded$v_bucket, sample2_hand_coded$hs_bucket)
+    ggplot() +
+      geom_point(data=sample2_hand_coded, aes(x=compound, y=human_score)) +
+      geom_smooth(data=sample2_hand_coded,method="lm",aes(x=compound, y=human_score)) +
+      geom_hline(aes(yintercept=0),color="black",linetype="dashed",alpha=0.25) +
+      geom_vline(aes(xintercept=0), color = "black",linetype="dashed",alpha=0.25) +
+      ylim(-1,1) +
+      labs(title = "Comparing Human vs. Vader Sentiment Scores",
+           x = "Vader Comment Sentiment Scores", y = "Human Comment Sentiment Scores")
+    
+    ggplot() +
+      geom_smooth(data=sample2_hand_coded,method="lm",
+                  aes(x=compound, y=human_score, color=subreddit)) +
+      geom_hline(aes(yintercept=0),color="black",linetype="dashed",alpha=0.25) +
+      geom_vline(aes(xintercept=0), color = "black",linetype="dashed",alpha=0.25) +
+      ylim(-1,1) +
+      labs(title = "Comparing Human vs. Vader Sentiment Scores by Subreddit",
+           x = "Vader Comment Sentiment Scores", y = "Human Comment Sentiment Scores")
+
+```
+
+  
+  ### PART 10: CREATING KEYWORD MENTION VARIABLE ###
+We want to create a variable that measures whether a comment explicitly mentions
+Israel, Palestine, or the conflict and will use a couple keywords to show this interest.
+
+The study will use this to verify that a given subreddit is 
+explicitly discussing this topic or parallel subjects more frequently post-event.
+```{r}  
+
+  df_political <- df_political %>% 
+                    mutate(has_keywords = 
+                          ifelse(grepl("Israel|Palestine|Gaza|Netanyahu|Hamas", 
+                                       comment, ignore.case = TRUE),1,0))
+  df_casual <- df_casual %>% 
+                mutate(has_keywords = 
+                      ifelse(grepl("Israel|Palestine|Gaza|Netanyahu|Hamas", 
+                                  comment, ignore.case = TRUE),1,0))
+  
+  table(df_political$has_keywords)
+  table(df_casual$has_keywords)
+    #Not surprising that r/CasualConversation has many fewer explicit 
+    #mentions of these topics. This subreddit's rules and moderation 
+    #keep it a non-political subreddit and filter out controversial topics.
+
+```
+
+
+  ### PART 11: DAILY AVERAGE SENTIMENT SCORE (DASS) CREATION ###
+```{r}
+
+#Create daily average sentiment variable
+    daily_scores_pol <- df_political %>% 
+                          group_by(date) %>% 
+                          summarize(daily_avg_Vcompound = mean(compound),
+                                    daily_avg_Vneg = mean(neg),
+                                    daily_avg_Vpos = mean(pos),
+                                    daily_avg_Vneu = mean(neu),
+                                    daily_avg_keyword = mean(has_keywords))
+                            #Taking avg of compound score, which rolls positive,
+                            #negative, and neutral scores into one.
+    
+    daily_scores_cas <- df_casual %>% 
+                          group_by(date) %>% 
+                          summarize(daily_avg_Vcompound = mean(compound),
+                                    daily_avg_Vneg = mean(neg),
+                                    daily_avg_Vpos = mean(pos),
+                                    daily_avg_Vneu = mean(neu),
+                                    daily_avg_keyword = mean(has_keywords))
+    
+    daily_scores_all <- df_all %>% 
+                          group_by(date) %>% 
+                          summarize(daily_avg_Vcompound = mean(compound),
+                                    daily_avg_Vneg = mean(neg),
+                                    daily_avg_Vpos = mean(pos),
+                                    daily_avg_Vneu = mean(neu))
+    
+    df_political <- left_join(df_political, daily_scores_pol, by = "date")
+    df_casual <- left_join(df_casual, daily_scores_cas, by = "date")
+    df_all <- left_join(df_all, daily_scores_all, by = "date")
+
+```
+
+
+  ### PART 12: CHARTING VALUES ###
+```{r}
+#Initial visualization results
+
+ p1_pol <- ggplot(df_political, aes(x = date, y = daily_avg_Vcompound)) +
+                 geom_line() +
+                 geom_point() +
+                 geom_smooth() +
+              geom_hline(aes(yintercept=0.05),color="green",linetype="dashed") +
+              geom_hline(aes(yintercept=-0.05), color="red",linetype="dashed") +              
+                 labs(title = "r/PoliticalDiscussion Sentiment Aug-Dec 2023",
+                     x = "Date",
+                     y = "Daily Average Sentiment Score") +
+                 scale_x_date(date_breaks = "3 days", date_labels = "%b %d") +
+                 theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7)) +
+                 ylim(-0.2, 0.4)
+    
+  p1_cas <- ggplot(df_casual, aes(x = date, y = daily_avg_Vcompound)) +
+              geom_line() +
+              geom_point() +
+              geom_smooth() +
+              geom_hline(aes(yintercept=0.05),color="green",linetype="dashed") +
+              geom_hline(aes(yintercept=-0.05), color="red",linetype="dashed") +
+              labs(title = "r/CasualConversation Sentiment Aug-Dec 2023",
+                   x = "Date",
+                   y = "Daily Average Sentiment Score") +        
+              scale_x_date(date_breaks = "3 days", date_labels = "%b %d") +
+              theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7)) +
+              ylim(-0.2, 0.4)
+  
+  grid1 <- p1_pol + p1_cas + plot_layout(ncol=2, nrow=1)
+  show(grid1)
+          #' Appears as though the r/PoliticalDiscussion centers around neutral sentiment.
+          #' 
+          #' The Hamas attack happened on Oct. 7th. We can see a clear dip in
+          #' sentiment in this political subreddit around this time into negative. 
+          #' Looks like a strong indicator toward evidence of an extraneous shock!
+          #' 
+          #' 
+          #' Unsurprisingly, r/CasualConversation is a quantifiably more positive
+          #' subreddit than r/PoliticalDiscussion.
+          #' 
+          #' Not an obvious dip here around Oct. 7th. However, Sep. 11th has an
+          #' obvious dip from positive to more neutral [-0.05, 0.05] scores. This is
+          #' the anniversary of the Sep. 11th terrorist attacks in the US that 
+          #' brought down the Twin Towers. 
+          #' 
+          #' Let's highlight both Oct.7th and Sep.11th on these two charts.
+          
+    
+  highlights <- data.frame(start = c(as.Date("2023-10-07"), as.Date("2023-09-08")),
+                      end = c(as.Date("2023-10-17"), as.Date("2023-09-14")),
+                      min = c(-Inf, -Inf), max = c(Inf, Inf))
+    
+  p2_pol <- ggplot() +
+          geom_line(data = df_political, aes(x = date, y = daily_avg_Vcompound)) +
+          geom_point(data = df_political, aes(x = date, y = daily_avg_Vcompound)) +
+          geom_smooth(data = df_political, aes(x = date, y = daily_avg_Vcompound)) +
+          geom_rect(data = highlights, aes(xmin = start, xmax = end,
+                                             ymin = min, ymax = max),
+                                              fill = c("pink", "tan"), alpha = 0.2) +
+          geom_hline(aes(yintercept=0.05),color="green",linetype="dashed") +
+          geom_hline(aes(yintercept=-0.05), color="red",linetype="dashed") +
+          labs(title = "r/PoliticalDiscussion Sentiment Aug-Dec 2023",
+               x = "Date",
+               y = "Daily Average Sentiment Score") +
+          scale_x_date(date_breaks = "3 days", date_labels = "%b %d") +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7))+
+          ylim(-0.2, 0.4)
+    
+  p2_cas <- ggplot() +
+            geom_line(data = df_casual, aes(x = date, y = daily_avg_Vcompound)) +
+            geom_point(data = df_casual, aes(x = date, y = daily_avg_Vcompound)) +
+            geom_smooth(data = df_casual, aes(x = date, y = daily_avg_Vcompound)) +
+            geom_rect(data = highlights, aes(xmin = start, xmax = end,
+                                               ymin = min, ymax = max),
+                                                fill = c("pink", "tan"), alpha = 0.2) +
+            geom_hline(aes(yintercept=0.05),color="green",linetype="dashed") +
+            geom_hline(aes(yintercept=-0.05), color="red",linetype="dashed") +
+            labs(title = "r/CasualConversation Sentiment Aug-Dec 2023",
+                 x = "Date",
+                 y = "Daily Average Sentiment Score") +
+            scale_x_date(date_breaks = "3 days", date_labels = "%b %d") +
+            theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7)) +
+            ylim(-0.2, 0.4)
+  
+  grid2 <- p2_pol + p2_cas + plot_layout(ncol=2, nrow=1)
+  show(grid2)
+
+```
+
+
+
+  ### PART 13: STATISTICAL ANALYSIS ###
+```{r}
+
+#Preparing the dataframes for package CausalImpact's specific requirements
+  daily_scores_pol <- daily_scores_pol[!is.na(daily_scores_pol$date),]
+  daily_scores_cas <- daily_scores_cas[!is.na(daily_scores_cas$date),]
+
+  daily_scores_pol <- daily_scores_pol[order(daily_scores_pol$date),]
+  ts_political <- zoo(daily_scores_pol$daily_avg_Vcompound, 
+                      order.by = daily_scores_pol$date)
+  
+  daily_scores_cas <- daily_scores_cas[order(daily_scores_cas$date),]
+  ts_casual <- zoo(daily_scores_cas$daily_avg_Vcompound, 
+                   order.by = daily_scores_cas$date)
+
+#Creating the pre- and post-shock periods
+  pre.period <- c(as.Date("2023-08-06"), as.Date("2023-10-06"))
+  post.period <- c(as.Date("2023-10-07"), as.Date("2023-12-05"))
+    #This period will test for medium-term effects (~2 months)
+  
+#Using CausalImpact for the analyses this code has built up toward
+  impact_pol <- CausalImpact(ts_political, pre.period, post.period)
+  plot(impact_pol)
+  summary(impact_pol)
+    #' There is a clear residual negative impact in the two months
+    #' post-event. The residual effect looks to reach its
+    #' negative contribution limit toward the end as well.
+  
+  impact_cas <- CausalImpact(ts_casual, pre.period, post.period)
+  plot(impact_cas)
+  summary(impact_cas)
+    #' A positive impact is hard to justify given these results. It looks 
+    #' instead like the subreddit had a less positive than typical 
+    #' pre-period that was starting to stabilize around the period of 
+    #' the terrorist attacks. 
+    #' 
+    #' A project with more work-time would expand the analysis timeframe 
+    #' to verify this hypothesis!
+    
+  
+#Breaking down the r/PoliticalDiscussion results
+  #' Note: only the "keyword" analysis was used in the final paper due to word
+  #' limit constraints. Future papers can include the pos/neg/neu analyses
+  #' and even first/third person usage analyses (the latter not included here).
+  ts_political_pos <- zoo(daily_scores_pol$daily_avg_Vpos, 
+                          order.by = daily_scores_pol$date)
+  ts_political_neg <- zoo(daily_scores_pol$daily_avg_Vneg, 
+                          order.by = daily_scores_pol$date)
+  ts_political_neu <- zoo(daily_scores_pol$daily_avg_Vneu, 
+                          order.by = daily_scores_pol$date)
+  ts_political_keyword <- zoo(daily_scores_pol$daily_avg_keyword, 
+                          order.by = daily_scores_pol$date)
+  
+  #Comment positivity breakdown
+  impact_pol_pos <- CausalImpact(ts_political_pos, pre.period, post.period)
+  plot(impact_pol_pos)
+  summary(impact_pol_pos)
+  
+  #Comment neutralness breakdown
+  impact_pol_neu <- CausalImpact(ts_political_neu, pre.period, post.period)
+  plot(impact_pol_neu)
+  summary(impact_pol_neu)
+    #Clear decrease in average daily neutralness in comment section
+  
+  #Comment negativity breakdown
+  impact_pol_neg <- CausalImpact(ts_political_neg, pre.period, post.period)
+  plot(impact_pol_neg)
+  summary(impact_pol_neg)
+    #Clear increase in average daily negativity in comment section 
+  
+  #Comment keyword presence breakdown
+  impact_pol_keyword <- CausalImpact(ts_political_keyword, pre.period, post.period)
+  plot(impact_pol_keyword)
+  summary(impact_pol_keyword)
+    #'Clear spike in percentage of comments each day mentioning one of the keywords.
+    #'Keywords are Israel, Palestine, Gaza, Netanyahu, and Hamas.
+    #'In fact, at the variable's peak, almost 50% of the comments 
+    #'in r/PoliticalDiscussion in a day mentioned at least one of these keywords.
+  
+```

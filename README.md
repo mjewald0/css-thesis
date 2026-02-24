@@ -6,4 +6,4 @@ Supplementary code to obtain Reddit comment data: filterscript_casual.py and fil
 
 Note that I have not added the full Reddit data to this repository. The files are each 80-100 MB after pre-processing, which is too large for Github. These data can be obtained via the provided Python scripts.
 
-For the full paper including methodology and results, see [CSS Thesis _ MitchellEwald.pdf](CSS Thesis _ MitchellEwald.pdf)
+For the full paper including methodology and results, see [paper.pdf](paper.pdf)
